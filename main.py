@@ -98,11 +98,54 @@ def extract_date(text: str) -> Optional[str]:
 
 
 def extract_vendor(text: str) -> Optional[str]:
-    patterns = [
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    # 1. Normal labeled patterns
+    labeled_patterns = [
         r"Vendor\s*[:\-]?\s*([^\n]+)",
-        r"Client\s*[:\-]?\s*([^\n]+)",
+        r"Supplier\s*[:\-]?\s*([^\n]+)",
+        r"From\s*[:\-]?\s*([^\n]+)",
+        r"Seller\s*[:\-]?\s*([^\n]+)",
     ]
-    return extract_first_match(text, patterns)
+    found = extract_first_match(text, labeled_patterns)
+    if found:
+        return found
+
+    # 2. First line like "VortexPrint - Tax Invoice"
+    for line in lines[:3]:
+        m = re.match(r"^(.*?)\s*[—\-]\s*(Tax Invoice|Invoice)\b", line, flags=re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip()
+            if candidate:
+                return candidate
+
+    # 3. First line ending with Invoice, e.g. "VortexPrint Tax Invoice"
+    for line in lines[:3]:
+        m = re.match(r"^(.*?)\s+(Tax Invoice|Invoice)\b", line, flags=re.IGNORECASE)
+        if m:
+            candidate = m.group(1).strip(" -—:")
+            if candidate:
+                return candidate
+
+    # 4. Fallback: first non-generic line that looks like a company name
+    skip_prefixes = (
+        "invoice no", "invoice number", "ref", "date", "issued",
+        "bill to", "ship to", "subtotal", "total", "gst", "igst",
+        "cgst", "sgst", "currency", "amount", "tax"
+    )
+
+    for line in lines[:5]:
+        low = line.lower()
+        if low.startswith(skip_prefixes):
+            continue
+        if "invoice" in low and len(line.split()) <= 2:
+            continue
+        if re.search(r"[A-Za-z]", line):
+            cleaned = re.sub(r"\b(Tax Invoice|Invoice)\b", "", line, flags=re.IGNORECASE).strip(" -—:")
+            if cleaned:
+                return cleaned
+
+    return None
 
 
 def extract_amount_by_labels(text: str, labels: list[str]) -> Optional[float]:
