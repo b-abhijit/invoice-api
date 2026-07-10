@@ -157,19 +157,29 @@ def extract_fields(text: str):
 
     # Look ONLY for subtotal-like labels
     subtotal_patterns = [
-        r"^\s*Subtotal\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-        r"^\s*Sub\s*Total\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-        r"^\s*Taxable\s*(?:Amount|Value)\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-        r"^\s*Basic\s*Amount\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-        r"^\s*Base\s*Amount\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-        r"^\s*Amount\s*Before\s*Tax\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-        r"^\s*Amount\s*Excluding\s*(?:GST|Tax)\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+        r"Subtotal",
+        r"Sub\s*Total",
+        r"Taxable\s*Amount",
+        r"Taxable\s*Value",
+        r"Basic\s*Amount",
+        r"Base\s*Amount",
+        r"Amount\s*Before\s*Tax",
+        r"Amount\s*Excluding\s*(?:GST|Tax)",
+        r"Net\s*Amount",
+        r"Net\s*Value",
+        r"Item\s*Total",
+        r"Goods\s*Value",
+        r"Assessable\s*Value",
     ]
 
-    for pattern in subtotal_patterns:
-        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+    for label in subtotal_patterns:
+        m = re.search(
+            rf"{label}[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+            text,
+            re.IGNORECASE,
+        )
         if m:
-            amount = clean_number(m.group(1))
+            result["amount"] = clean_number(m.group(1))
             break
 
     # Only if no subtotal is found, calculate it from total - tax
