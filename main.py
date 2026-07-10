@@ -153,48 +153,47 @@ def extract_fields(text: str):
     # Amount (Subtotal BEFORE tax)
     # ------------------------------------------------------------------
 
+    amount = None
+
+    # Look ONLY for subtotal-like labels
     subtotal_patterns = [
-        r"Subtotal\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-        r"Sub\s*Total\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-        r"Taxable\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-        r"Taxable\s*Value\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-        r"Basic\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-        r"Amount\s*Before\s*Tax\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-        r"Amount\s*Excluding\s*Tax\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-        r"Base\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"^\s*Subtotal\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+        r"^\s*Sub\s*Total\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+        r"^\s*Taxable\s*(?:Amount|Value)\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+        r"^\s*Basic\s*Amount\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+        r"^\s*Base\s*Amount\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+        r"^\s*Amount\s*Before\s*Tax\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+        r"^\s*Amount\s*Excluding\s*(?:GST|Tax)\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
     ]
 
     for pattern in subtotal_patterns:
-        m = re.search(pattern, text, re.IGNORECASE)
+        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
         if m:
-            result["amount"] = clean_number(m.group(1))
+            amount = clean_number(m.group(1))
             break
 
-    # LAST RESORT ONLY
-    if result["amount"] is None:
+    # Only if no subtotal is found, calculate it from total - tax
+    if amount is None and result["tax"] is not None:
 
         total_patterns = [
-            r"Grand\s*Total\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-            r"Total\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
-            r"Total\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+            r"^\s*Grand\s*Total\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+            r"^\s*Total\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+            r"^\s*Total\s*Amount\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
+            r"^\s*Amount\s*Due\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
         ]
 
-        total_value = None
+        total = None
 
         for pattern in total_patterns:
-            m = re.search(pattern, text, re.IGNORECASE)
+            m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if m:
-                total_value = clean_number(m.group(1))
+                total = clean_number(m.group(1))
                 break
 
-        if (
-            total_value is not None
-            and result["tax"] is not None
-        ):
-            result["amount"] = round(
-                total_value - result["tax"],
-                2,
-            )
+        if total is not None:
+            amount = round(total - result["tax"], 2)
+
+    result["amount"] = amount
 
     # ------------------------------------------------------------------
     # Currency
