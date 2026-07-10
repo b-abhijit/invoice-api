@@ -6,12 +6,11 @@ from dateutil import parser as dateparser
 
 app = FastAPI(title="Invoice Extraction API")
 
-# --- Rule 4: CORS must be enabled so a Cloudflare Worker (or any browser) can call us ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],       # allow any website to call this API
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],       # allow GET, POST, OPTIONS, etc.
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -21,17 +20,23 @@ class InvoiceRequest(BaseModel):
 
 
 def clean_number(raw: str):
-    """Turn '1,40,000.00' or '2,199.00' into a plain float."""
     if not raw:
         return None
-    raw = raw.replace(",", "").strip()
+
+    raw = raw.replace(",", "").replace("₹", "").replace("Rs.", "").replace("Rs", "").strip()
+
+    m = re.search(r"\d+(?:\.\d+)?", raw)
+    if not m:
+        return None
+
     try:
-        return float(raw)
+        return float(m.group())
     except ValueError:
         return None
 
 
-def extract_fields(text: str) -> dict:
+def extract_fields(text: str):
+
     result = {
         "invoice_no": None,
         "date": None,
@@ -41,126 +46,186 @@ def extract_fields(text: str) -> dict:
         "currency": None,
     }
 
-    # ---- invoice_no: look for "Invoice No", "Invoice Number", or "Ref" ----
-    m = re.search(
-        r"(?:Invoice\s*No\.?|Invoice\s*Number|Ref)\s*[:#]?\s*([A-Za-z0-9\-/]+)",
-        text, re.IGNORECASE,
-    )
-    if m:
-        result["invoice_no"] = m.group(1).strip()
+    # ------------------------------------------------------------------
+    # Invoice Number
+    # ------------------------------------------------------------------
 
-    # ---- date: look for a label, then parse whatever date-shaped text follows ----
-    # Covers: "15 March 2026", "4th April 2026", "March 15, 2026", "2026-03-15",
-    # "04/04/2026", "04-04-2026", "04.04.2026", etc.
+    invoice_patterns = [
+        r"Invoice\s*No\.?\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+        r"Invoice\s*Number\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+        r"Invoice\s*#\s*([A-Za-z0-9._/-]+)",
+        r"Invoice\s*ID\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+        r"Inv\.?\s*No\.?\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+        r"Inv\.?\s*#\s*([A-Za-z0-9._/-]+)",
+        r"Bill\s*No\.?\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+        r"Bill\s*Number\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+        r"Reference\s*No\.?\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+        r"Ref(?:erence)?\.?\s*[:#]?\s*([A-Za-z0-9._/-]+)",
+    ]
+
+    for pattern in invoice_patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            result["invoice_no"] = m.group(1).strip()
+            break
+
+    # Fallback: invoice numbers like VP-3355
+    if result["invoice_no"] is None:
+        candidates = re.findall(
+            r"\b[A-Z]{1,6}[-/][A-Z0-9-]{2,}\b",
+            text
+        )
+        if candidates:
+            result["invoice_no"] = candidates[0]
+
+    # ------------------------------------------------------------------
+    # Date
+    # ------------------------------------------------------------------
+
     DATE_VALUE = (
-        r"[0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\.?,?\s+[0-9]{4}"   # 15 March 2026 / 4th April 2026
-        r"|[A-Za-z]+\.?\s+[0-9]{1,2}(?:st|nd|rd|th)?,?\s+[0-9]{4}"   # March 15, 2026
-        r"|[0-9]{4}[/\-.][0-9]{1,2}[/\-.][0-9]{1,2}"                 # 2026-03-15 / 2026/03/15
-        r"|[0-9]{1,2}[/\-.][0-9]{1,2}[/\-.][0-9]{4}"                 # 04/04/2026 / 04-04-2026
+        r"[0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\.?,?\s+[0-9]{4}"
+        r"|[A-Za-z]+\.?\s+[0-9]{1,2}(?:st|nd|rd|th)?,?\s+[0-9]{4}"
+        r"|[0-9]{4}[/\-.][0-9]{1,2}[/\-.][0-9]{1,2}"
+        r"|[0-9]{1,2}[/\-.][0-9]{1,2}[/\-.][0-9]{4}"
     )
+
     m = re.search(
-        r"(?:Invoice\s*Date|Bill(?:ing)?\s*Date|Date\s*of\s*Issue|Dated|Invoice\s*Dt\.?|Issued(?:\s*On)?|Dt\.?|Date)"
-        r"\s*[:#]?\s*(" + DATE_VALUE + r")",
-        text, re.IGNORECASE,
+        r"(?:Invoice\s*Date|Bill(?:ing)?\s*Date|Date\s*of\s*Issue|Issued(?:\s*On)?|Dated|Date)"
+        r"\s*[:#]?\s*(" + DATE_VALUE + ")",
+        text,
+        re.IGNORECASE,
     )
+
     if not m:
-        # Fallback: no recognizable label — just grab the first date-shaped text anywhere.
         m = re.search(DATE_VALUE, text, re.IGNORECASE)
 
     if m:
         candidate = m.group(1) if m.lastindex else m.group(0)
         try:
-            # dayfirst=True since these are Indian invoices (DD/MM/YYYY convention)
-            result["date"] = dateparser.parse(candidate, dayfirst=True).strftime("%Y-%m-%d")
-        except (ValueError, OverflowError):
+            result["date"] = dateparser.parse(
+                candidate,
+                dayfirst=True
+            ).strftime("%Y-%m-%d")
+        except Exception:
             pass
 
-    # ---- vendor: try many common labels first, then fall back to the first
-    # "real" line of the document (skipping generic headers and other known labels) ----
-    m = re.search(
-        r"(?:Vendor|Seller|Supplier|Merchant|Sold\s*By|Billed\s*By|From|Company(?:\s*Name)?|Business\s*Name)"
-        r"\s*[:#]?\s*(.+)",
-        text, re.IGNORECASE,
-    )
-    if m:
-        result["vendor"] = m.group(1).strip()
-    else:
-        m2 = re.search(r"^([A-Za-z0-9&.,'\s]+?)\s*[—-]\s*Tax Invoice", text, re.MULTILINE)
-        if m2:
-            result["vendor"] = m2.group(1).strip()
-        else:
-            # Last resort: scan line by line for the first line that isn't a
-            # generic header word (INVOICE, RECEIPT...) and isn't itself
-            # some other known label (Invoice No, Date, Bill To...).
-            generic_headers = {"invoice", "tax invoice", "receipt", "bill",
-                                "credit note", "proforma invoice"}
-            labeled_line = re.compile(
-                r"^\s*(?:invoice\s*no\.?|invoice\s*number|ref|date|dated|"
-                r"invoice\s*date|bill(?:ing)?\s*date|issued|dt\.?|bill\s*to|"
-                r"client|customer|buyer)\b",
-                re.IGNORECASE,
+    # ------------------------------------------------------------------
+    # Vendor
+    # ------------------------------------------------------------------
+
+    vendor_patterns = [
+        r"Vendor\s*[:#]?\s*(.+)",
+        r"Supplier\s*[:#]?\s*(.+)",
+        r"Seller\s*[:#]?\s*(.+)",
+        r"Merchant\s*[:#]?\s*(.+)",
+        r"Sold\s*By\s*[:#]?\s*(.+)",
+        r"Billed\s*By\s*[:#]?\s*(.+)",
+        r"Company\s*Name\s*[:#]?\s*(.+)",
+        r"Business\s*Name\s*[:#]?\s*(.+)",
+    ]
+
+    for pattern in vendor_patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            result["vendor"] = m.group(1).strip()
+            break
+
+    # ------------------------------------------------------------------
+    # Tax
+    # ------------------------------------------------------------------
+
+    tax_patterns = [
+        r"GST.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"IGST.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"CGST.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"SGST.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"VAT.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Tax\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+    ]
+
+    for pattern in tax_patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            result["tax"] = clean_number(m.group(1))
+            break
+
+    # ------------------------------------------------------------------
+    # Amount (Subtotal BEFORE tax)
+    # ------------------------------------------------------------------
+
+    subtotal_patterns = [
+        r"Subtotal\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Sub\s*Total\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Taxable\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Taxable\s*Value\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Basic\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Amount\s*Before\s*Tax\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Amount\s*Excluding\s*Tax\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        r"Base\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+    ]
+
+    for pattern in subtotal_patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            result["amount"] = clean_number(m.group(1))
+            break
+
+    # LAST RESORT ONLY
+    if result["amount"] is None:
+
+        total_patterns = [
+            r"Grand\s*Total\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+            r"Total\s*Amount\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+            r"Total\s*[: ]+.*?([0-9][0-9,]*\.?[0-9]*)",
+        ]
+
+        total_value = None
+
+        for pattern in total_patterns:
+            m = re.search(pattern, text, re.IGNORECASE)
+            if m:
+                total_value = clean_number(m.group(1))
+                break
+
+        if (
+            total_value is not None
+            and result["tax"] is not None
+        ):
+            result["amount"] = round(
+                total_value - result["tax"],
+                2,
             )
-            for line in text.splitlines():
-                line = line.strip()
-                if not line or line.lower() in generic_headers:
-                    continue
-                if labeled_line.match(line):
-                    continue
-                line = re.sub(r"\s*[—-]\s*(?:Tax\s*)?Invoice\s*$", "", line, flags=re.IGNORECASE).strip()
-                if line:
-                    result["vendor"] = line
-                    break
 
-    # ---- tax: GST/IGST/CGST/SGST/VAT/Tax line, skipping any "(18%)" style rate first ----
-    # Anchored to the START of a line so we don't accidentally match the word
-    # "Tax" inside an unrelated phrase like "Tax Invoice".
+    # ------------------------------------------------------------------
+    # Currency
+    # ------------------------------------------------------------------
+
     m = re.search(
-        r"^[ \t]*(?:IGST|CGST|SGST|GST|VAT|Tax)\b\s*(?:\(\d{1,3}%\))?[^\d\n]*?([0-9][0-9,]*\.?[0-9]*)",
-        text, re.IGNORECASE | re.MULTILINE,
+        r"Currency\s*[:#]?\s*([A-Za-z]{3})",
+        text,
+        re.IGNORECASE,
     )
-    if m:
-        result["tax"] = clean_number(m.group(1))
 
-    # ---- amount: the pre-tax subtotal, under many possible labels ----
-    m = re.search(
-        r"^[ \t]*(?:Sub\s*[- ]?\s*total|Net\s*Amount|Taxable\s*(?:Value|Amount)|"
-        r"Basic\s*Amount|Amount\s*Before\s*Tax|Amount\s*\(?\s*excl(?:uding|\.)?\s*(?:Tax|GST)\s*\)?|"
-        r"Base\s*Amount)\b[^\d\n]*?([0-9][0-9,]*\.?[0-9]*)",
-        text, re.IGNORECASE | re.MULTILINE,
-    )
-    if m:
-        result["amount"] = clean_number(m.group(1))
-    else:
-        # Fallback: no subtotal-style label found. If we can find a grand
-        # total AND we already know the tax, amount = total - tax.
-        total_match = re.search(
-            r"^[ \t]*(?:Grand\s*Total|Total\s*Due|Total\s*Amount|Amount\s*Due|TOTAL|Total)\b"
-            r"[^\d\n]*?([0-9][0-9,]*\.?[0-9]*)",
-            text, re.IGNORECASE | re.MULTILINE,
-        )
-        if total_match and result["tax"] is not None:
-            total_value = clean_number(total_match.group(1))
-            if total_value is not None:
-                result["amount"] = round(total_value - result["tax"], 2)
-
-    # ---- currency: explicit "Currency:" label wins, else guess from symbols ----
-    if re.search(r"\bINR\b|Rs\.|₹", text):
-        result["currency"] = "INR"
-    elif re.search(r"\bUSD\b|\$", text):
-        result["currency"] = "USD"
-    elif re.search(r"\bEUR\b|€", text):
-        result["currency"] = "EUR"
-
-    m = re.search(r"Currency\s*[:#]?\s*([A-Za-z]{3})", text, re.IGNORECASE)
     if m:
         result["currency"] = m.group(1).upper()
+
+    elif re.search(r"₹|Rs\.?|INR", text, re.IGNORECASE):
+        result["currency"] = "INR"
+
+    elif re.search(r"\$", text):
+        result["currency"] = "USD"
+
+    elif re.search(r"€", text):
+        result["currency"] = "EUR"
 
     return result
 
 
 @app.get("/")
-def health_check():
-    return {"status": "ok", "message": "Invoice extraction API is running"}
+def health():
+    return {
+        "status": "ok"
+    }
 
 
 @app.post("/extract")
