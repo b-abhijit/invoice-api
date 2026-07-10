@@ -155,53 +155,38 @@ def extract_fields(text: str):
 
     amount = None
 
-    # Look ONLY for subtotal-like labels
-    subtotal_patterns = [
-        r"Subtotal",
-        r"Sub\s*Total",
-        r"Taxable\s*Amount",
-        r"Taxable\s*Value",
-        r"Basic\s*Amount",
-        r"Base\s*Amount",
-        r"Amount\s*Before\s*Tax",
-        r"Amount\s*Excluding\s*(?:GST|Tax)",
-        r"Net\s*Amount",
-        r"Net\s*Value",
-        r"Item\s*Total",
-        r"Goods\s*Value",
-        r"Assessable\s*Value",
-    ]
+    for line in text.splitlines():
+        l = line.lower()
 
-    for label in subtotal_patterns:
-        m = re.search(
-            rf"{label}[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-            text,
-            re.IGNORECASE,
-        )
-        if m:
-            result["amount"] = clean_number(m.group(1))
-            break
+        # Ignore total-like lines
+        if any(x in l for x in [
+            "grand total",
+            "total due",
+            "amount due",
+            "net payable",
+            "payable",
+            "total"
+        ]):
+            continue
 
-    # Only if no subtotal is found, calculate it from total - tax
-    if amount is None and result["tax"] is not None:
-
-        total_patterns = [
-            r"^\s*Grand\s*Total\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-            r"^\s*Total\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-            r"^\s*Total\s*Amount\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-            r"^\s*Amount\s*Due\b[^\d\n]*([0-9][0-9,]*\.?[0-9]*)",
-        ]
-
-        total = None
-
-        for pattern in total_patterns:
-            m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        # Prefer subtotal-like lines
+        if any(x in l for x in [
+            "subtotal",
+            "sub total",
+            "taxable amount",
+            "taxable value",
+            "basic amount",
+            "base amount",
+            "amount before tax",
+            "amount excluding",
+            "item total",
+            "goods value",
+            "assessable value",
+        ]):
+            m = re.search(r"([0-9][0-9,]*\.?[0-9]*)", line)
             if m:
-                total = clean_number(m.group(1))
+                amount = clean_number(m.group(1))
                 break
-
-        if total is not None:
-            amount = round(total - result["tax"], 2)
 
     result["amount"] = amount
 
