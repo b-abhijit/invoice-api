@@ -15,20 +15,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class InvoiceRequest(BaseModel):
     invoice_text: str
 
 
-def extract_money(text):
-    if text is None:
+def find_first(patterns, text):
+    """Try multiple regex patterns and return the first captured value."""
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def extract_amount(value):
+    """Extract a numeric amount like Rs. 2,199.00 -> 2199.00"""
+    if value is None:
         return None
 
-    text = text.replace(",", "")
+    value = value.replace(",", "")
 
-    match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)", value)
 
-    if match:
-        return float(match.group(1))
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
 
     return None
 
@@ -38,41 +52,65 @@ def extract(req: InvoiceRequest):
 
     text = req.invoice_text
 
-    invoice_no = None
-    date = None
-    vendor = None
-    amount = None
-    tax = None
-    currency = "INR"
+    invoice_patterns = [
+        r"Invoice\s*No\.?\s*[:#]?\s*(\S+)",
+        r"Invoice\s*Number\s*[:#]?\s*(\S+)",
+        r"Invoice\s*#\s*(\S+)",
+        r"Invoice\s*ID\s*[:#]?\s*(\S+)",
+        r"Inv\s*No\.?\s*[:#]?\s*(\S+)",
+        r"Bill\s*No\.?\s*[:#]?\s*(\S+)",
+    ]
 
-    invoice_match = re.search(r"Invoice\s*No[:\s]+(.+)", text, re.I)
+    vendor_patterns = [
+        r"Vendor\s*:\s*(.+)",
+        r"Supplier\s*:\s*(.+)",
+        r"Sold\s*By\s*:\s*(.+)",
+        r"Bill\s*From\s*:\s*(.+)",
+    ]
 
-    if invoice_match:
-        invoice_no = invoice_match.group(1).strip()
+    date_patterns = [
+        r"Invoice\s*Date\s*:\s*(.+)",
+        r"Bill\s*Date\s*:\s*(.+)",
+        r"Date\s*:\s*(.+)",
+        r"Dated\s*:\s*(.+)",
+    ]
 
-    vendor_match = re.search(r"Vendor[:\s]+(.+)", text, re.I)
+    subtotal_patterns = [
+        r"Subtotal\s*:\s*(.+)",
+        r"Sub\s*Total\s*:\s*(.+)",
+        r"Taxable\s*Amount\s*:\s*(.+)",
+        r"Amount\s*Before\s*Tax\s*:\s*(.+)",
+        r"Net\s*Amount\s*:\s*(.+)",
+    ]
 
-    if vendor_match:
-        vendor = vendor_match.group(1).strip()
+    tax_patterns = [
+        r"GST.*?:\s*(.+)",
+        r"IGST.*?:\s*(.+)",
+        r"CGST.*?:\s*(.+)",
+        r"SGST.*?:\s*(.+)",
+        r"Tax\s*:\s*(.+)",
+        r"VAT\s*:\s*(.+)",
+    ]
 
-    subtotal_match = re.search(r"Subtotal[:\s]+(.+)", text, re.I)
+    invoice_no = find_first(invoice_patterns, text)
 
-    if subtotal_match:
-        amount = extract_money(subtotal_match.group(1))
+    vendor = find_first(vendor_patterns, text)
 
-    tax_match = re.search(r"GST.*?:\s*(.+)", text, re.I)
+    date_string = find_first(date_patterns, text)
 
-    if tax_match:
-        tax = extract_money(tax_match.group(1))
-
-    date_match = re.search(r"Date[:\s]+(.+)", text, re.I)
-
-    if date_match:
+    if date_string:
         try:
-            dt = parser.parse(date_match.group(1))
-            date = dt.strftime("%Y-%m-%d")
-        except:
-            pass
+            date = parser.parse(date_string, dayfirst=True).strftime("%Y-%m-%d")
+        except Exception:
+            date = None
+    else:
+        date = None
+
+    subtotal = find_first(subtotal_patterns, text)
+    amount = extract_amount(subtotal)
+
+    tax_value = find_first(tax_patterns, text)
+    tax = extract_amount(tax_value)
 
     return {
         "invoice_no": invoice_no,
@@ -80,5 +118,5 @@ def extract(req: InvoiceRequest):
         "vendor": vendor,
         "amount": amount,
         "tax": tax,
-        "currency": currency
+        "currency": "INR",
     }
