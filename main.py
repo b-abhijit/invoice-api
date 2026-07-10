@@ -1,4 +1,3 @@
-
 import re
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -112,14 +111,6 @@ def extract_fields(text: str) -> dict:
                     result["vendor"] = line
                     break
 
-    # ---- amount: the Subtotal line (before tax) ----
-    m = re.search(
-        r"Sub\s*[- ]?\s*total[^\d]*?([0-9][0-9,]*\.?[0-9]*)",
-        text, re.IGNORECASE,
-    )
-    if m:
-        result["amount"] = clean_number(m.group(1))
-
     # ---- tax: GST/IGST/CGST/SGST/VAT/Tax line, skipping any "(18%)" style rate first ----
     # Anchored to the START of a line so we don't accidentally match the word
     # "Tax" inside an unrelated phrase like "Tax Invoice".
@@ -129,6 +120,28 @@ def extract_fields(text: str) -> dict:
     )
     if m:
         result["tax"] = clean_number(m.group(1))
+
+    # ---- amount: the pre-tax subtotal, under many possible labels ----
+    m = re.search(
+        r"^[ \t]*(?:Sub\s*[- ]?\s*total|Net\s*Amount|Taxable\s*(?:Value|Amount)|"
+        r"Basic\s*Amount|Amount\s*Before\s*Tax|Amount\s*\(?\s*excl(?:uding|\.)?\s*(?:Tax|GST)\s*\)?|"
+        r"Base\s*Amount)\b[^\d\n]*?([0-9][0-9,]*\.?[0-9]*)",
+        text, re.IGNORECASE | re.MULTILINE,
+    )
+    if m:
+        result["amount"] = clean_number(m.group(1))
+    else:
+        # Fallback: no subtotal-style label found. If we can find a grand
+        # total AND we already know the tax, amount = total - tax.
+        total_match = re.search(
+            r"^[ \t]*(?:Grand\s*Total|Total\s*Due|Total\s*Amount|Amount\s*Due|TOTAL|Total)\b"
+            r"[^\d\n]*?([0-9][0-9,]*\.?[0-9]*)",
+            text, re.IGNORECASE | re.MULTILINE,
+        )
+        if total_match and result["tax"] is not None:
+            total_value = clean_number(total_match.group(1))
+            if total_value is not None:
+                result["amount"] = round(total_value - result["tax"], 2)
 
     # ---- currency: explicit "Currency:" label wins, else guess from symbols ----
     if re.search(r"\bINR\b|Rs\.|₹", text):
