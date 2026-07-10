@@ -1,3 +1,4 @@
+
 import re
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,14 +76,41 @@ def extract_fields(text: str) -> dict:
         except (ValueError, OverflowError):
             pass
 
-    # ---- vendor: "Vendor:" label first, else the company name in a title line ----
-    m = re.search(r"Vendor\s*[:#]?\s*(.+)", text, re.IGNORECASE)
+    # ---- vendor: try many common labels first, then fall back to the first
+    # "real" line of the document (skipping generic headers and other known labels) ----
+    m = re.search(
+        r"(?:Vendor|Seller|Supplier|Merchant|Sold\s*By|Billed\s*By|From|Company(?:\s*Name)?|Business\s*Name)"
+        r"\s*[:#]?\s*(.+)",
+        text, re.IGNORECASE,
+    )
     if m:
         result["vendor"] = m.group(1).strip()
     else:
         m2 = re.search(r"^([A-Za-z0-9&.,'\s]+?)\s*[—-]\s*Tax Invoice", text, re.MULTILINE)
         if m2:
             result["vendor"] = m2.group(1).strip()
+        else:
+            # Last resort: scan line by line for the first line that isn't a
+            # generic header word (INVOICE, RECEIPT...) and isn't itself
+            # some other known label (Invoice No, Date, Bill To...).
+            generic_headers = {"invoice", "tax invoice", "receipt", "bill",
+                                "credit note", "proforma invoice"}
+            labeled_line = re.compile(
+                r"^\s*(?:invoice\s*no\.?|invoice\s*number|ref|date|dated|"
+                r"invoice\s*date|bill(?:ing)?\s*date|issued|dt\.?|bill\s*to|"
+                r"client|customer|buyer)\b",
+                re.IGNORECASE,
+            )
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.lower() in generic_headers:
+                    continue
+                if labeled_line.match(line):
+                    continue
+                line = re.sub(r"\s*[—-]\s*(?:Tax\s*)?Invoice\s*$", "", line, flags=re.IGNORECASE).strip()
+                if line:
+                    result["vendor"] = line
+                    break
 
     # ---- amount: the Subtotal line (before tax) ----
     m = re.search(
