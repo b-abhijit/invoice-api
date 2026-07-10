@@ -85,13 +85,30 @@ def normalize_date(date_str: Optional[str]) -> Optional[str]:
 
 def extract_invoice_no(text: str) -> Optional[str]:
     patterns = [
-        r"Invoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Za-z0-9\/\-_]+)",
-        r"Inv\s*(?:No\.?)\s*[:\-]?\s*([A-Za-z0-9\/\-_]+)",
-        r"Ref\s*[:\-]?\s*([A-Za-z0-9\/\-_]+)",
-        r"Reference\s*[:\-]?\s*([A-Za-z0-9\/\-_]+)",
-        r"Bill\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\/\-_]+)",
+        r"Invoice\s*(?:No\.?|Number)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-_]*)",
+        r"Inv\s*(?:No\.?)\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-_]*)",
+        r"Bill\s*No\.?\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-_]*)",
+        r"Receipt\s*No\.?\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-_]*)",
+        r"Reference\s*No\.?\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-_]*)",
+        r"Ref\s*[:\-]?\s*([A-Za-z0-9][A-Za-z0-9\/\-_]*)",
+        r"No\.?\s*[:\-]?\s*([A-Za-z0-9]{1,10}[-\/_][A-Za-z0-9\/\-_]+)",
+        r"Invoice\s*[:\-]?\s*([A-Za-z0-9]{1,10}[-\/_][A-Za-z0-9\/\-_]+)",
     ]
-    return extract_first_match(text, patterns)
+
+    found = extract_first_match(text, patterns)
+    if found:
+        return found
+
+    lines = get_non_empty_lines(text)
+
+    # fallback: look in first few lines for something that looks like KW-330 / INV-2026-0041
+    for line in lines[:5]:
+        if re.search(r"\b(invoice|inv|bill|receipt|ref|reference)\b", line, flags=re.IGNORECASE):
+            m = re.search(r"\b([A-Za-z]{1,10}[-\/_][A-Za-z0-9\/\-_]+)\b", line)
+            if m:
+                return m.group(1)
+
+    return None
 
 
 def extract_date(text: str) -> Optional[str]:
