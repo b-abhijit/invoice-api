@@ -1,13 +1,3 @@
-"""
-Fixed Schema Invoice Extraction API
-------------------------------------
-POST /extract  {"invoice_text": "..."}  ->  6-key JSON (nulls if not found)
-
-Run locally:
-    pip install -r requirements.txt
-    uvicorn main:app --reload --port 8000
-"""
-
 import re
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,15 +49,29 @@ def extract_fields(text: str) -> dict:
     if m:
         result["invoice_no"] = m.group(1).strip()
 
-    # ---- date: look for "Date", "Issued", "Invoice Date" then parse whatever follows ----
+    # ---- date: look for a label, then parse whatever date-shaped text follows ----
+    # Covers: "15 March 2026", "4th April 2026", "March 15, 2026", "2026-03-15",
+    # "04/04/2026", "04-04-2026", "04.04.2026", etc.
+    DATE_VALUE = (
+        r"[0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+\.?,?\s+[0-9]{4}"   # 15 March 2026 / 4th April 2026
+        r"|[A-Za-z]+\.?\s+[0-9]{1,2}(?:st|nd|rd|th)?,?\s+[0-9]{4}"   # March 15, 2026
+        r"|[0-9]{4}[/\-.][0-9]{1,2}[/\-.][0-9]{1,2}"                 # 2026-03-15 / 2026/03/15
+        r"|[0-9]{1,2}[/\-.][0-9]{1,2}[/\-.][0-9]{4}"                 # 04/04/2026 / 04-04-2026
+    )
     m = re.search(
-        r"(?:Invoice\s*Date|Date|Issued)\s*[:#]?\s*"
-        r"([0-9]{1,2}\s+\w+\s+[0-9]{4}|[0-9]{4}-[0-9]{2}-[0-9]{2}|\w+\s+[0-9]{1,2},?\s+[0-9]{4})",
+        r"(?:Invoice\s*Date|Bill(?:ing)?\s*Date|Date\s*of\s*Issue|Dated|Invoice\s*Dt\.?|Issued(?:\s*On)?|Dt\.?|Date)"
+        r"\s*[:#]?\s*(" + DATE_VALUE + r")",
         text, re.IGNORECASE,
     )
+    if not m:
+        # Fallback: no recognizable label — just grab the first date-shaped text anywhere.
+        m = re.search(DATE_VALUE, text, re.IGNORECASE)
+
     if m:
+        candidate = m.group(1) if m.lastindex else m.group(0)
         try:
-            result["date"] = dateparser.parse(m.group(1)).strftime("%Y-%m-%d")
+            # dayfirst=True since these are Indian invoices (DD/MM/YYYY convention)
+            result["date"] = dateparser.parse(candidate, dayfirst=True).strftime("%Y-%m-%d")
         except (ValueError, OverflowError):
             pass
 
